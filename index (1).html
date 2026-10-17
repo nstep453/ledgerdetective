@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ledger Detective</title>
+<style>
+:root{--desk:#25352e;--paper:#f4f2e6;--tint:#e3ebd9;--ink:#1d2a44;--mu:#5b675f;--rule:#b7c9b2;--red:#b8322a;--hl:#fbe58a;--ok:#cde7c6;--miss:#f5db98;--bad:#f2c2ba;--cream:#efe9d2}
+*{box-sizing:border-box}
+body{margin:0;padding:16px;background:var(--desk);color:var(--ink);font:15px/1.55 Georgia,"Times New Roman",serif;min-height:100vh}
+h1{margin:0;font:italic 700 30px/1 Georgia,serif;color:var(--cream);letter-spacing:.01em}
+h1 small{display:block;font:400 13px/1.4 Georgia,serif;color:#a9bbad;margin-top:4px}
+header{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;justify-content:space-between;margin-bottom:14px}
+.cs{display:flex;gap:6px;flex-wrap:wrap}
+button{font:600 13px/1.2 Georgia,serif;background:var(--paper);color:var(--ink);border:1px solid var(--rule);padding:8px 12px;border-radius:3px;cursor:pointer}
+button:hover:not(:disabled){background:#fff;border-color:var(--ink)}
+button:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--red);outline-offset:2px}
+button.on{background:var(--ink);color:var(--cream);border-color:var(--ink)}
+button:disabled{opacity:.5;cursor:default}
+.main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start}
+@media(max-width:920px){.main{grid-template-columns:1fr}}
+.sheet{background:var(--paper);border-radius:4px;padding:16px 18px;margin-bottom:14px;box-shadow:0 2px 0 #0004}
+.sheet h2{margin:0 0 4px;font-size:19px}
+.sheet h3{margin:0 0 8px;font-size:16px}
+.sheet p{margin:6px 0}
+.mu{color:var(--mu);font-size:13.5px}
+.tabs{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
+.tw{overflow-x:auto;background:var(--paper);border-radius:4px;box-shadow:0 2px 0 #0004}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th{text-align:left;font-weight:700;color:var(--ink);padding:9px 10px;background:var(--tint);border-bottom:2px solid var(--ink);white-space:nowrap}
+td{padding:8px 10px;border-bottom:1px solid var(--rule);border-right:1px solid #d3dfcf;vertical-align:top;font-variant-numeric:tabular-nums}
+td.n{text-align:right;white-space:nowrap}
+td.neg{color:var(--red)}
+tr[data-id]{cursor:pointer}
+tr[data-id]:hover td{background:#fffbe6}
+tr.f td{background:#f7e0dc}
+tr.f td:first-child::before{content:"\2691 ";color:var(--red)}
+tr.h td{background:var(--hl)}
+tr.t td:first-child{box-shadow:inset 4px 0 0 var(--ink)}
+tr.ok td{background:var(--ok)}tr.miss td{background:var(--miss)}tr.fp td{background:var(--bad)}
+.hrs{font:700 34px/1 Georgia,serif}
+.tl{display:flex;justify-content:space-between;width:100%;margin-top:6px;text-align:left;gap:8px}
+.tl span{font-weight:400;color:var(--mu)}
+.tl.on span{color:#cfd8e8}
+.log{font-size:13px;color:var(--mu);max-height:170px;overflow:auto;margin-top:10px;border-top:1px dashed var(--rule);padding-top:6px}
+.log div{margin:4px 0}
+.chip{display:inline-block;background:#f7e0dc;color:var(--red);border:1px solid var(--red);border-radius:12px;padding:0 8px;margin:2px;font-size:12.5px}
+select{width:100%;padding:8px;margin:8px 0;background:#fff;border:1px solid var(--ink);border-radius:3px;font:14px Georgia,serif;color:var(--ink)}
+.big{width:100%;background:var(--red);color:#fff;border-color:var(--red);padding:11px;font-size:15px}
+.big:hover:not(:disabled){background:#9a2820;color:#fff}
+.score{font:700 54px/1 Georgia,serif}
+details{margin-top:8px;font-size:14px}
+summary{cursor:pointer;font-weight:700}
+ul{margin:6px 0;padding-left:20px}
+.key i{display:inline-block;width:12px;height:12px;margin:0 4px 0 10px;vertical-align:-1px;border:1px solid #0003}
+</style></head>
+<body>
+<header>
+<h1>Ledger Detective<small>Read the books. Find the fraud. File your case.</small></h1>
+<div class="cs" id="cases"></div>
+</header>
+<div id="app"></div>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmt=n=>n===0?"":n.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
+
+const TB={V:["Vendor master",["ID","Vendor","Address","Bank acct","Added by","Added"]],
+I:["Invoices",["ID","Party","Date","Amount","PO / Ref","Approver / Note"]],
+J:["General journal",["ID","Date","Description","Account","Debit","Credit","Posted by"]],
+B:["Bank statement",["ID","Date","Description","Amount"]]};
+
+const S={ghost:["Ghost vendor","A fictitious or insider-controlled payee. Tells: addresses or bank accounts shared with staff, no PO, amounts hugging the approval limit, one person doing everything."],
+rt:["Round-trip transaction","Money sent out comes back as fake revenue. Tells: huge period-end amounts, the same bank account on both legs, a customer nobody has met."],
+pf:["Revenue pulled forward","Next period sales booked early. Tells: invoices near year end with future ship dates, side letters, overrides, no cash."],
+dup:["Duplicate invoices","The same bill paid twice or split to dodge review. Tells: same amount or invoice number repeated, slightly altered references."],
+pay:["Ghost employee","Payroll for someone who does not work there. Tells: no HR record, shared bank accounts, manual payroll entries."]};
+
+const C=[
+{t:"The Phantom Janitor",co:"Maple & Finch Bakery Supply (fiscal year ends Jun 30)",pe:"2026-06-30",lim:5000,scheme:"ghost",
+brief:"The owner feels facilities costs are creeping up. Policy: any invoice of $5,000 or more needs a PO and a second approver. Find who is being paid for what.",
+V:[["V1","Hudson Flour Co.","14 Mill Rd, Troy NY","...4410","M. Reyes","2019-02-11"],["V2","Brightline Packaging","900 Industrial Pkwy, Albany NY","...2208","M. Reyes","2020-06-03"],["V3","Corner Utilities","PO Box 88, Albany NY","...9015","M. Reyes","2018-01-15"],["V4","Apex Facility Services LLC","52 Birch Ln, Schenectady NY","...7731","D. Ortiz","2026-01-09"]],
+I:[["I1","V1 Hudson Flour","2026-01-14",3420.18,"PO-1182","M. Reyes"],["I2","V2 Brightline","2026-01-20",2115.5,"PO-1187","M. Reyes"],["I3","V4 Apex Facility","2026-02-02",4950,"none","D. Ortiz"],["I4","V3 Corner Utilities","2026-02-05",612.33,"Autopay","n/a"],["I5","V4 Apex Facility","2026-03-03",4900,"none","D. Ortiz"],["I6","V1 Hudson Flour","2026-03-14",8250,"PO-1204","M. Reyes + CFO"],["I7","V4 Apex Facility","2026-04-06",4975,"none","D. Ortiz"],["I8","V2 Brightline","2026-04-18",12000,"PO-1219","M. Reyes + CFO"]],
+J:[["J1","2026-01-14","Flour, Hudson (I1)","5000 COGS",3420.18,0,"M. Reyes"],["J2","2026-02-02","Facilities services, Apex (I3)","6200 Facilities",4950,0,"D. Ortiz"],["J3","2026-03-03","Facilities services, Apex (I5)","6200 Facilities",4900,0,"D. Ortiz"],["J4","2026-03-14","Flour, Hudson (I6)","5000 COGS",8250,0,"M. Reyes"],["J5","2026-04-06","Facilities services, Apex (I7)","6200 Facilities",4975,0,"D. Ortiz"],["J6","2026-04-18","Packaging, Brightline (I8)","5100 Packaging",12000,0,"M. Reyes"],["J7","2026-03-31","Depreciation, ovens","6900 Depreciation",3000,0,"System"]],
+B:[["B1","2026-01-28","ACH out, Hudson Flour",-3420.18],["B2","2026-02-09","ACH out, Apex Facility acct ...7731",-4950],["B3","2026-02-27","Payroll deposit, D. Ortiz acct ...7731",-2310],["B4","2026-03-10","ACH out, Apex Facility acct ...7731",-4900],["B5","2026-03-21","ACH out, Hudson Flour",-8250],["B6","2026-04-13","ACH out, Apex Facility acct ...7731",-4975],["B7","2026-04-25","Wire out, Brightline",-12000]],
+fraud:["V4","I3","I5","I7","J2","J3","J5","B2","B4","B6"],link:["V4","B2","B3","B4","B6"],
+lf:"Apex's bank account ...7731 is the same account that receives D. Ortiz's payroll (B3). Apex's address matches Ortiz's home in the HR file. B3 is evidence, but it is a legitimate payroll deposit.",
+why:"Apex is a shell controlled by D. Ortiz. Ortiz created the vendor, approved the invoices alone, kept every one under the $5,000 limit (so no PO or second approver), and the payments landed in Ortiz's own account. The $12,000 Brightline invoice and round depreciation were red herrings: PO-backed and CFO-approved, or routine."},
+
+{t:"Round Trip Ticket",co:"Northgate Software Inc. (Q1 close, board wants record growth)",pe:"2026-03-31",lim:20000,scheme:"rt",
+brief:"Q1 revenue just hit a record, mostly in the last days of March. Cash tells the truth better than revenue. Follow the money, both directions.",
+V:[["V1","Lumen Consulting LLC","210 Harbor St, Wilmington DE","...5502","R. Voss (CEO)","2026-03-19"],["V2","CloudHost Inc.","77 Server Way, Ashburn VA","...3317","S. Patel","2022-04-02"],["V3","Prime Office Realty","1 Main Plaza, Boston MA","...8840","S. Patel","2021-08-15"]],
+I:[["I1","Customer: Vantage Health","2026-01-15",96000,"SA-41","Annual prepay, 12 mo"],["I2","V2 CloudHost","2026-01-31",18400,"PO-77","CFO approved"],["I3","V3 Prime Office","2026-02-01",30000,"Lease","CFO approved"],["I4","V1 Lumen Consulting","2026-03-20",250000,"none","R. Voss only, no board OK"],["I5","Customer: Orbit Retail Group","2026-03-30",250000,"SA-58","Signed 3/29, no onboarding"],["I6","Customer: Bluepine Logistics","2026-03-12",42500,"SA-52","Onboarded Feb"]],
+J:[["J1","2026-02-10","Deferred revenue, Vantage prepay (I1)","2100 Deferred rev",0,96000,"S. Patel"],["J2","2026-03-20","Consulting fee, Lumen (I4)","6400 Prof. fees",250000,0,"R. Voss"],["J3","2026-03-30","Revenue, Orbit Retail (I5)","4000 Revenue",0,250000,"R. Voss"],["J4","2026-03-12","Revenue, Bluepine (I6)","4000 Revenue",0,42500,"S. Patel"],["J5","2026-02-01","Rent, Prime Office (I3)","6100 Rent",30000,0,"S. Patel"],["J6","2026-01-31","Hosting, CloudHost (I2)","6300 Hosting",18400,0,"S. Patel"]],
+B:[["B1","2026-02-03","ACH out, Prime Office Realty",-30000],["B2","2026-02-10","ACH in, Vantage Health",96000],["B3","2026-03-15","ACH in, Bluepine Logistics",42500],["B4","2026-03-24","Wire out, Lumen Consulting acct ...5502",-250000],["B5","2026-03-31","Wire in, Orbit Retail, originator acct ...5502",250000]],
+fraud:["V1","I4","I5","J2","J3","B4","B5"],link:["V1","B4","B5","I5"],
+lf:"The wire that paid Orbit (B5) originated from account ...5502, which is Lumen's account. Orbit has no onboarding, no contact, and no other history.",
+why:"Northgate wired $250k to Lumen (a vendor the CEO added days earlier, with no board approval) and the same money came back from the same account labelled as Orbit Retail revenue. Net cash effect is zero; revenue is fake. Vantage's $96k and the $30k rent are round but real, with matching cash and contracts."},
+
+{t:"Christmas in Cascade",co:"Cascade Outdoor Gear (fiscal year ends Dec 31, bonuses tied to revenue)",pe:"2026-12-31",lim:50000,scheme:"pf",
+brief:"Revenue hit its bonus target with three days to spare. Check when the goods actually left the dock, and who posted the entries.",
+V:[["V1","Summit Textiles","5 Loom Rd, Greenville SC","...1190","K. Lund","2020-03-01"],["V2","Cascade Properties","88 Ridge Dr, Bend OR","...6604","K. Lund","2019-01-10"]],
+I:[["I1","Ridgeline Outfitters","2026-12-05",38200,"PO R-901","Shipped 12/07, delivered 12/09"],["I2","Alpine Co-op","2026-12-18",24750,"PO A-330","Shipped 12/19"],["I3","Timberline Retail","2026-12-29",148000,"PO T-77","Not shipped; held until 1/12"],["I4","Basecamp Direct","2026-12-30",96000,"PO B-12","Ship date 1/09"],["I5","Evergreen Sports","2026-12-31",125000,"verbal PO","Ship date 1/15; side letter: right of return"],["I6","Ridgeline Outfitters","2026-12-22",50000,"PO R-915","Shipped 12/23, delivered 12/28"],["I7","Cairn Supply","2026-11-20",17400,"PO C-2","Shipped 11/21"]],
+J:[["J1","2026-12-07","Sales, Ridgeline (I1)","4000 Sales",0,38200,"K. Lund"],["J2","2026-12-19","Sales, Alpine (I2)","4000 Sales",0,24750,"K. Lund"],["J3","2026-12-23","Sales, Ridgeline (I6)","4000 Sales",0,50000,"K. Lund"],["J4","2026-12-29","Sales, Timberline (I3)","4000 Sales",0,148000,"CFO override"],["J5","2026-12-30","Sales, Basecamp (I4)","4000 Sales",0,96000,"CFO override"],["J6","2026-12-31","Sales, Evergreen (I5)","4000 Sales",0,125000,"CFO override"],["J7","2026-11-21","Sales, Cairn (I7)","4000 Sales",0,17400,"K. Lund"]],
+B:[["B1","2026-12-12","ACH in, Ridgeline Outfitters",38200],["B2","2026-12-15","ACH out, Cascade Properties rent",-9000],["B3","2026-12-30","ACH in, Alpine Co-op",24750],["B4","2026-12-31","Wire in, Ridgeline Outfitters",50000]],
+fraud:["I3","I4","I5","J4","J5","J6"],link:["I3","I4","I5","J4","J5","J6"],
+lf:"Warehouse log: nothing left the dock for I3, I4 or I5 before Dec 31. I5 has a side letter allowing return. All three were posted by CFO override, and none has any cash received.",
+why:"$369k of January shipments was booked in the last three days of December through CFO override, enough to clear the bonus threshold. The $50k Ridgeline sale is round but shipped, delivered and paid. Real sales have ship dates, deliveries and cash."}
+];
+
+const TL=[
+{k:"round",n:"Round-sum scan",c:1,f:(a)=>a.some(x=>x>=1000&&x%1000===0)},
+{k:"near",n:"Approval-limit scan",c:1,f:(a)=>a.some(x=>x<cur.lim&&x>=cur.lim*.9)},
+{k:"pe",n:"Period-end scan",c:1,f:(a,d)=>d&&Math.abs(new Date(d)-new Date(cur.pe))<=3*864e5},
+{k:"link",n:"Cross-reference",c:2,ids:1}];
+
+let cur,idx=0,flags,hrs,act,res,logs,hints,done,sch,tab;
+let best={};try{best=JSON.parse(localStorage.getItem("ld_best")||"{}")}catch(e){}
+
+const allRows=()=>["V","I","J","B"].flatMap(k=>cur[k]||[]);
+const log=m=>logs.unshift(m);
+const cls=id=>{const t=cur.fraud.includes(id),f=flags.has(id);
+ if(done)return t&&f?"ok":t?"miss":f?"fp":"";
+ return[f?"f":"",[...act].some(k=>res[k].has(id))?"h":"",hints.has(id)?"t":""].join(" ")};
+
+function load(i){idx=i;cur=C[i];flags=new Set();hrs=cur.hrs||6;act=new Set();res={};hints=new Set();done=null;sch="";tab="I";
+ logs=[];log("Case opened. Trust nothing, verify everything. Click any row to flag it.");render()}
+
+function table(k){return`<div class="tw"><table><tr>${TB[k][1].map(h=>`<th>${h}</th>`).join("")}</tr>${cur[k].map(r=>`<tr data-id="${esc(r[0])}" class="${cls(r[0])}">${r.map(x=>typeof x==="number"?`<td class="n${x<0?" neg":""}">${fmt(x)}</td>`:`<td>${esc(x)}</td>`).join("")}</tr>`).join("")}</table></div>`}
+
+function render(){
+ const c=cur;if(!c[tab])tab="I";
+ $("#cases").innerHTML=C.map((x,i)=>`<button data-case="${i}" class="${i===idx?"on":""}">${esc(x.t)}${best[x.t]!=null?" ("+best[x.t]+")":""}</button>`).join("")+`<button id="gen">+ New case from Claude</button>`;
+ const n=c.fraud.length;
+ $("#app").innerHTML=`<div class="main"><div>
+ <div class="sheet"><h2>${esc(c.t)}</h2><div class="mu">${esc(c.co)}</div><p>${esc(c.brief)}</p>
+ <details><summary>How to play</summary><ul>
+ <li>Open each ledger and click rows you think belong to the fraud. Click again to unflag.</li>
+ <li>Scans cost audit hours and highlight leads. A lead is not proof: honest entries get highlighted too.</li>
+ <li>Flag only entries that are part of the scheme. Each false flag costs points; unspent hours earn a bonus.</li>
+ <li>Name the scheme and file. The case has ${n} fraudulent items spread across the books.</li></ul></details>
+ <details><summary>Field guide to fraud schemes</summary><ul>${Object.values(S).map(s=>`<li><b>${s[0]}.</b> ${s[1]}</li>`).join("")}</ul></details></div>
+ <div class="tabs">${Object.keys(TB).filter(k=>c[k]&&c[k].length).map(k=>`<button data-tab="${k}" class="${tab===k?"on":""}">${TB[k][0]} (${c[k].length})</button>`).join("")}</div>
+ ${table(tab)}
+ ${done?`<p class="key mu"><i style="background:var(--ok)"></i>caught<i style="background:var(--miss)"></i>missed<i style="background:var(--bad)"></i>false flag</p>`:""}
+ </div><aside>
+ <div class="sheet"><h3>Audit hours</h3><div class="hrs">${hrs} <span class="mu">of ${c.hrs||6}</span></div>
+ ${TL.map(t=>`<button class="tl ${act.has(t.k)?"on":""}" data-tool="${t.k}" ${done?"disabled":""}>${t.n}<span>${res[t.k]?(act.has(t.k)?"showing, ":"hidden, ")+res[t.k].size+" hits":t.c+"h"}</span></button>`).join("")}
+ <button class="tl" data-hint ${done?"disabled":""}>Ask the senior partner<span>1h</span></button>
+ <div class="log">${logs.map(l=>`<div>${esc(l)}</div>`).join("")}</div></div>
+ <div class="sheet"><h3>Evidence board (${flags.size} flagged)</h3>
+ ${flags.size?[...flags].map(i=>`<span class="chip">${esc(i)}</span>`).join(""):'<span class="mu">Nothing flagged yet.</span>'}
+ <select id="sch" ${done?"disabled":""}><option value="">Which scheme is it?</option>${Object.entries(S).map(([k,v])=>`<option value="${k}" ${sch===k?"selected":""}>${v[0]}</option>`).join("")}</select>
+ <button class="big" data-file ${done?"disabled":""}>File the case</button></div>
+ ${done?`<div class="sheet"><h3>Verdict: ${done.rank}</h3><div class="score">${done.score}</div>
+ <p>Caught ${done.tp} of ${n} fraudulent items, ${done.fp} false flag${done.fp===1?"":"s"}. Scheme: ${done.sok?"correct.":"wrong, it was "+S[c.scheme][0]+"."}</p>
+ <p>${esc(c.why)}</p><button data-next>Next case</button> <button data-again>Replay this case</button></div>`:""}
+ </aside></div>`}
+
+function runTool(k){const t=TL.find(x=>x.k===k);
+ if(res[k]){act.has(k)?act.delete(k):act.add(k);return render()}
+ if(hrs<t.c){log("Not enough audit hours for the "+t.n+".");return render()}
+ hrs-=t.c;const s=new Set();
+ if(t.ids)cur.link.forEach(i=>s.add(i));
+ else allRows().forEach(r=>{const a=r.filter(x=>typeof x==="number").map(Math.abs),d=r.find(x=>typeof x==="string"&&/^\d{4}-\d\d-\d\d$/.test(x));if(t.f(a,d))s.add(r[0])});
+ res[k]=s;act.add(k);
+ log(t.n+": "+s.size+" hit"+(s.size===1?"":"s")+". "+(t.ids?cur.lf:"These are leads, not proof. Some hits are innocent."));render()}
+
+function hint(){if(hrs<1){log("No hours left for the partner.");return render()}
+ const m=cur.fraud.filter(i=>!flags.has(i));
+ if(!m.length){log("Partner: you have flagged everything I would have pointed at. Check for false flags.");return render()}
+ hrs--;const i=m[Math.random()*m.length|0];hints.add(i);log("Partner: take a harder look at the row marked with a bar on its left edge.");render()}
+
+function fileCase(){
+ if(!flags.size){log("Flag at least one entry before filing.");return render()}
+ if(!sch){log("Choose which scheme you think this is.");return render()}
+ const T=new Set(cur.fraud),tp=[...flags].filter(i=>T.has(i)).length,fp=flags.size-tp,sok=sch===cur.scheme;
+ const score=Math.max(0,Math.min(100,Math.round(60*tp/T.size)+(sok?25:0)-8*fp+3*hrs));
+ const rank=score>=90?"Forensic Partner":score>=75?"Senior Examiner":score>=55?"Audit Associate":score>=35?"Trainee":"Rookie Bookkeeper";
+ done={tp,fp,sok,score,rank};
+ if(best[cur.t]==null||score>best[cur.t]){best[cur.t]=score;try{localStorage.setItem("ld_best",JSON.stringify(best))}catch(e){}}
+ render();window.scrollTo({top:0,behavior:"smooth"})}
+
+async function gen(){
+ const b=$("#gen");b.disabled=true;b.textContent="Claude is cooking the books...";
+ const kind=Object.keys(S)[Math.random()*5|0],ind=["a dental clinic","a craft brewery","a trucking firm","a SaaS startup","a charter school","a furniture maker","a regional bakery chain"][Math.random()*7|0];
+ const prompt=`Create a fresh forensic-accounting puzzle for a detective game about ${ind}. The hidden fraud scheme key is "${kind}" (${S[kind][0]}). Reply with JSON only, no markdown, matching exactly:
+{"t":"case title","co":"company name and one-line context","pe":"YYYY-MM-DD period end","lim":approval limit number,"brief":"2-3 sentence brief that does not name the scheme","scheme":"${kind}","V":[["V1","name","address","bank acct last digits","added by","YYYY-MM-DD"]],"I":[["I1","party","YYYY-MM-DD",amount,"PO or ref","approver or note"]],"J":[["J1","YYYY-MM-DD","description","account",debit,credit,"posted by"]],"B":[["B1","YYYY-MM-DD","description",signedAmount]],"fraud":["ids of every fraudulent row"],"link":["ids a cross-reference of addresses, accounts and counterparties would surface"],"lf":"what that cross-reference reveals","why":"explanation of the scheme and of the red herrings"}
+Rules: 4-5 vendors, 7-9 invoices, 7-9 journal lines, 7-9 bank lines, 6-10 fraud ids. Ids are unique and prefixed V, I, J, B. Amounts are plain numbers (bank outflows negative; unused debit or credit is 0). Include at least 3 innocent decoys that look suspicious (round sums, big amounts, period-end dates) but have clean support. Every fraud row must be discoverable from clues in the data.`;
+ const call=h=>fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:h,body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:4000,messages:[{role:"user",content:prompt}]})});
+ try{
+  const h={"Content-Type":"application/json","anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"};
+  let k="";try{k=sessionStorage.getItem("ak")||""}catch(e){}
+  if(k)h["x-api-key"]=k;
+  let r=await call(h);
+  if(r.status===401||r.status===403){k=prompt("Outside Claude this needs an Anthropic API key. It is sent only to api.anthropic.com.")||"";if(!k)throw new Error("No API key provided.");try{sessionStorage.setItem("ak",k)}catch(e){}h["x-api-key"]=k;r=await call(h)}
+  if(!r.ok)throw new Error("API returned "+r.status);
+  const d=await r.json(),tx=d.content.filter(x=>x.type==="text").map(x=>x.text).join("");
+  const o=JSON.parse(tx.slice(tx.indexOf("{"),tx.lastIndexOf("}")+1));
+  const ids=new Set(["V","I","J","B"].flatMap(q=>(o[q]||[]).map(r=>r[0])));
+  if(!o.t||!o.fraud||!o.fraud.length||!o.fraud.every(i=>ids.has(i))||!S[o.scheme])throw new Error("Claude returned a malformed case.");
+  o.link=(o.link||[]).filter(i=>ids.has(i));o.lf=o.lf||"";
+  C.push(o);load(C.length-1);
+ }catch(e){alert("Could not generate a case: "+e.message+" Try again, or play the built-in cases.");render()}}
+
+document.addEventListener("click",e=>{
+ const t=e.target.closest("[data-id],[data-tab],[data-tool],[data-hint],[data-file],[data-case],[data-next],[data-again],#gen");if(!t)return;
+ const d=t.dataset;
+ if(t.id==="gen")return gen();
+ if(d.id!==undefined){if(done)return;flags.has(d.id)?flags.delete(d.id):flags.add(d.id);return render()}
+ if(d.tab)return(tab=d.tab,render());
+ if(d.tool)return runTool(d.tool);
+ if(d.hint!==undefined)return hint();
+ if(d.file!==undefined)return fileCase();
+ if(d.case!==undefined)return load(+d.case);
+ if(d.next!==undefined)return load((idx+1)%C.length);
+ if(d.again!==undefined)return load(idx)});
+document.addEventListener("change",e=>{if(e.target.id==="sch")sch=e.target.value});
+load(0);
+</script>
+</body></html>
